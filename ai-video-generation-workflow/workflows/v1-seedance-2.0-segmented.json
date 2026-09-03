@@ -1,0 +1,963 @@
+{
+  "name": "aivideo seedance 2.0",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "let item = $input.first().json;\nlet text = '';\n\n// 1. 终极抓取逻辑 (🌟 新增了对 OpenAI/Gemma 标准返回格式的支持)\nif (item.choices?.[0]?.message?.content) {\n    text = item.choices[0].message.content;\n}\nelse if (item.content && typeof item.content === 'string') {\n    text = item.content;\n}\nelse if (item.content?.parts?.[0]?.text) {\n    text = item.content.parts[0].text;\n}\nelse if (item.candidates?.[0]?.content?.parts?.[0]?.text) {\n    text = item.candidates[0].content.parts[0].text;\n}\nelse if (item.output) {\n    text = item.output;\n}\nelse if (item.text) {\n    text = item.text;\n}\n\n// 2. 安全清理\ntext = text.replace(/```json/gi, '').replace(/```/g, '').trim();\n\n// 3. 安全解析 JSON\nlet data = {};\ntry {\n    let match = text.match(/\\{[\\s\\S]*\\}/);\n    data = match ? JSON.parse(match[0]) : JSON.parse(text);\n} catch (error) {\n    // 🌟 报错时输出 text 变量，方便一眼看出是抓取失败还是 JSON 真有语法错误\n    throw new Error(\"⚠️ 拦截成功：大模型本次生成的 JSON 格式有语法错误，或者文本抓取失败！\\n提取到的文本内容为：\\n\" + text);\n}\n\n// 🌟 提取表单源头的数据，防止数据在此节点丢失！\nconst formData = $('产品信息').first().json;\n\n// 4. 标准化数组包装输出（完整透传所有参数）\nreturn [{\n  json: {\n    product_name: data.product_name || '',\n    category: data.category || '',\n    visual_features: Array.isArray(data.visual_features) ? data.visual_features.join(', ') : (data.visual_features || ''),\n    target_audience: data.target_audience || '',\n    extreme_pain_point: data.extreme_pain_point || data.pain_point || '',\n    core_solution: data.core_solution || '',\n    visual_hook_suggestion: data.visual_hook_suggestion || '',\n    key_differentiators: Array.isArray(data.key_differentiators) ? data.key_differentiators.join(', ') : (data.key_differentiators || ''),\n    suggested_style: data.suggested_style || '简约',\n\n    // 👇 下面这些是新增的修复代码：强行把表单设置继承下来\n    videoLanguage: formData.videoLanguage || 'Portuguese (Brazil)',\n    videoDuration: formData.videoDuration || 30,\n    numberOfVideos: formData.numberOfVideos || 1,\n    customerEmail: formData.customerEmail || '',\n    customerName: formData.customerName || '',\n    customerId: formData.customerId || '',\n\n    product_image_base64: $('提取产品图片').first().json.product_image_base64 || '',\n\n    // 🌟 Catbox I2V: 从数据流上游显式继承产品图片公网 URL\n    product_public_image_url: $('📎 提取产品图URL').first().json.product_public_image_url || ''\n  }\n}];"
+      },
+      "id": "634439eb-2595-4d56-b9cb-73bb27a6b7be",
+      "name": "📊 解析产品分析",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1952,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 注意：这里改成了 $input.first() 来适配 All Items 模式\nconst item = $input.first().json;\nlet text = '';\n\n// 精准抓取 DeepSeek 数据\nif (item.choices && item.choices[0] && item.choices[0].message && item.choices[0].message.content) {\n    text = item.choices[0].message.content;\n} else {\n    throw new Error(\"找不到 DeepSeek 的数据，请检查上游节点。\");\n}\n\n// 强力清理 Markdown 标记\ntext = text.replace(/```json/gi, '').replace(/```/g, '').trim();\n\n// 安全解析 JSON（带容错正则匹配）\nlet data = {};\ntry {\n    let match = text.match(/\\{[\\s\\S]*\\}/);\n    data = match ? JSON.parse(match[0]) : JSON.parse(text);\n} catch (error) {\n    throw new Error(\"JSON 解析失败。提取到的文本为: \" + text);\n}\n\n// 🌟 从上游节点获取变体元数据\nconst variantData = $('🎲 提示词变体生成器').first().json;\nconst videoDuration = parseInt($('产品信息').first().json.videoDuration) || 30;\n\n// 🔢 极简模式：统一每段固定 10 秒（20秒→2段，30秒→3段）\n// 提取核心 segments 数组\nlet segments = data.segments || (Array.isArray(data) ? data : []);\nconst totalSegments = segments.length;\n\n// 🌟 获取产品图片（用于下游 Seedance I2V）\nconst productImage = $('📊 解析产品分析').first().json.product_image_base64 || '';\n// 🌟 Catbox I2V: 从数据流主干继承产品图片公网 URL，广播至每一个分镜切片\nconst productPublicImageUrl = $('📊 解析产品分析').first().json.product_public_image_url || '';\n\n// 重新映射数据格式。输出裂变后的数组！\nreturn segments.map((seg, index) => ({\n  json: {\n    variant_index: variantData.variant_index || 1,\n    hook_angle: variantData.hook_angle || '',\n    total_variants: variantData.total_variants || 1,\n    segment_index: seg.segment_index || (index + 1),\n    segment_type: seg.segment_type || 'clip',\n\n    // 🔢 【核心修复】强制使用计算时长，绝不回退到大模型返回值\n    duration_seconds: 10,\n\n    // 🏷️ 【新增】尾段标记：下游 Seedance 据此决定 T2V 或 I2V 路线\n    is_last_segment: index === totalSegments - 1,\n\n    visual_prompt: (seg.prompt || seg.visual_prompt || '').substring(0, 900),\n    prompt: (seg.prompt || seg.visual_prompt || '').substring(0, 900),\n    voice_id: seg.voice_id || '',\n    narration: seg.narration || '',\n    text_overlay: seg.text_overlay || '',\n\n    product_image_base64: productImage,\n\n    // 🌟 Catbox I2V: 广播公网图片 URL 到每一个分镜切片\n    product_public_image_url: productPublicImageUrl\n  }\n}));"
+      },
+      "id": "382486bb-ca60-47b6-840b-179ab9f739cb",
+      "name": "📝 解析分段",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -432,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nreturn [{\n  json: {\n    status: 'segments_complete',\n    total_segments: items.length,\n    total_duration: items.reduce((sum, item) => sum + (item.json.duration_seconds || 5), 0),\n    variant_index: items[0]?.json?.variant_index || 1,\n    hook_angle: items[0]?.json?.hook_angle || '',\n    total_variants: items[0]?.json?.total_variants || 1,\n    segments: items.map(item => ({\n      segment_index: item.json.segment_index,\n      segment_type: item.json.segment_type,\n      video_url: item.json.video_url || '',\n      audio_url: item.json.audio_url || '',\n      narration: item.json.narration || '',\n      text_overlay: item.json.text_overlay || '',\n      duration_seconds: item.json.duration_seconds || 5\n    })),\n    customer_email: $('产品信息').first().json.customerEmail || '',\n    customer_name: $('产品信息').first().json.customerName || '',\n    customer_id: $('产品信息').first().json.customerId || '',\n    product_name: $('📊 解析产品分析').first().json.product_name || ''\n  }\n}];\n"
+      },
+      "id": "9a00d8f6-4bdd-4244-88a9-ae8a9a9e56fb",
+      "name": "📦 汇总结果",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1232,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_SEEDANCE_API_KEY"
+            },
+            {
+              "name": "Prefer",
+              "value": "wait=30"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  (() => {\n    const dur = Math.min($json.duration_seconds || 10, 10);\n    const visualPrompt = $json.visual_prompt || $json.prompt || '';\n    const narration = $json.narration || '';\n    \n    // 🌟 直接读取数据流中的图片 URL，100% 稳定获取\n    const productImageUrl = $json.product_public_image_url || '';\n\n    let fullPrompt = visualPrompt;\n    if (narration) {\n      fullPrompt += '\\n\\n画面中的人物正在面对镜头说话，请原生生成以下葡萄牙语台词的朗读语音并严格同步嘴型（仅作为语音发音，严禁在画面中显示任何文字）：\\n\"' + narration + '\"';\n    }\n\n    const contentPayload = [\n      { type: 'text', text: fullPrompt }\n    ];\n\n    if (productImageUrl) {\n      contentPayload.push({\n        type: 'image_url',\n        image_url: { url: productImageUrl }\n      });\n    }\n\n    return {\n      model: 'doubao-seedance-2-0-mini-260615',\n      content: contentPayload,\n      generate_audio: true,\n      ratio: '9:16',\n      resolution: '480p',\n      duration: dur,\n      watermark: false\n    };\n  })()\n}}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 180000
+        }
+      },
+      "id": "681b11de-35b4-4479-bb2a-eea0126b203a",
+      "name": "🎥 Seedance 视频生成",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1040,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "cd30fdb8-12bd-4008-a9b8-559d5a45671f",
+      "name": "🔄 逐段生成",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -1488,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const seedanceResp = $input.item.json;\nconst taskId = seedanceResp.id || seedanceResp.task_id;\nconst seg = $('💾 保存分镜上下文').item.json;\n\nif (!taskId) {\n  throw new Error('Seedance did not return task_id. Response: ' + JSON.stringify(seedanceResp).substring(0, 200));\n}\n\nreturn {\n  json: {\n    task_id: taskId,\n    attempt: 0,\n    max_attempts: 60,\n    variant_index: seg.variant_index || 1,\n    hook_angle: seg.hook_angle || '',\n    total_variants: seg.total_variants || 1,\n    segment_index: seg.segment_index,\n    segment_type: seg.segment_type,\n    duration_seconds: seg.duration_seconds,\n    visual_prompt: seg.visual_prompt,\n    text_overlay: seg.text_overlay,\n    narration: seg.narration,\n    voice_id: seg.voice_id\n  }\n};"
+      },
+      "id": "078112e7-fb4c-4667-88c7-f8dcf688038e",
+      "name": "📹 提取TaskID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -864,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 30
+      },
+      "id": "fda777f0-94c2-4338-a320-635b42b0b121",
+      "name": "⏳ 等待轮询",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -656,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/{{ $json.task_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "62c99738-31fc-451f-b1e4-67d76f01eedd",
+      "name": "🔍 查询任务状态",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -496,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const statusResp = $input.item.json;\nconst prevData = $('⏳ 等待轮询').item.json;\n\n// 核心修改：去掉了最外层的 [ ]，直接返回 Object\nreturn {\n  json: {\n    ...prevData,\n    status: statusResp.status || statusResp.state,\n    video_url: statusResp.output?.video_url || statusResp.result?.video_url || statusResp.video_url || null,\n    audio_url: statusResp.output?.audio_url || statusResp.result?.audio_url || null,\n    raw_response: statusResp\n  }\n};"
+      },
+      "id": "5fe79a97-0d70-4b77-afd3-8af872a2c22d",
+      "name": "🔗 合并状态",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -304,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "status-completed",
+              "leftValue": "={{ $json.status }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "completed"
+            },
+            {
+              "id": "status-succeeded",
+              "leftValue": "={{ $json.status }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "succeeded"
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "99a62d63-b796-441d-9ffe-81bbec750918",
+      "name": "✅ 任务完成?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -112,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const data = $input.item.json;\nconst attempt = (data.attempt || 0) + 1;\n\nif (attempt > (data.max_attempts || 60)) {\n  throw new Error('Seedance task ' + data.task_id + ' timed out after ' + attempt + ' attempts');\n}\n\n// 核心修改：去掉了最外层的 [ ]，直接返回 Object\nreturn {\n  json: {\n    ...data,\n    attempt: attempt\n  }\n};"
+      },
+      "id": "b65a1f1c-c35d-44d7-be9a-c98bd9d1e0c8",
+      "name": "⏱️ 超时检查",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -192,
+        832
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const data = $input.item.json;\n\n// 提取 Seedance 返回的原生视频 URL\nconst videoUrl = data.video_url || data.raw_response?.content?.video_url || data.raw_response?.output?.video_url || data.raw_response?.result?.video_url || '';\n\nreturn {\n  json: {\n    segment_index: data.segment_index,\n    segment_type: data.segment_type,\n    duration_seconds: data.duration_seconds,\n    visual_prompt: data.visual_prompt,\n    text_overlay: data.text_overlay,\n    narration: data.narration,\n    video_url: videoUrl,\n    audio_url: '',\n    variant_index: data.variant_index || 1,\n    hook_angle: data.hook_angle || '',\n    total_variants: data.total_variants || 1,\n    task_id: data.task_id,\n    status: 'done'\n  }\n};\n"
+      },
+      "id": "9f2953bb-4325-41ef-a91f-bfc9fe5104a1",
+      "name": "📹 提取视频URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        128,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const summary = $input.first().json;\nconst segments = summary.segments || [];\n\nconst clipFiles = [];\nconst audioFiles = [];\nlet totalDuration = 0;\n\nfor (const seg of segments) {\n  if (seg.video_url) {\n    clipFiles.push(seg.video_url);\n    totalDuration += seg.duration_seconds || 5;\n  }\n  // 🎵 同步收集音频URL，用于 FFmpeg 双轨道音视频合成\n  if (seg.audio_url) {\n    audioFiles.push(seg.audio_url);\n  }\n}\n\nif (clipFiles.length === 0) {\n  throw new Error(\"没有找到任何视频片段，无法拼接\");\n}\n\nconst timestamp = new Date().toISOString().replace(/[:.]/g, \"-\");\nconst outputDir = \"/path/to/n8n-output\";\nconst outputFile = outputDir + \"/final_\" + timestamp + \".mp4\";\n\nreturn [{\n  json: {\n    clip_files: clipFiles,\n    audio_files: audioFiles,\n    output_file: outputFile,\n    threads: 4,\n    total_segments: segments.length,\n    total_duration: totalDuration,\n    variant_index: summary.variant_index || 1,\n    hook_angle: summary.hook_angle || \"\",\n    total_variants: summary.total_variants || 1,\n    customer_email: summary.customer_email,\n    customer_name: summary.customer_name,\n    customer_id: summary.customer_id,\n    product_name: summary.product_name\n  }\n}];"
+      },
+      "id": "cf3859ca-2689-462e-92b3-9fd99391d717",
+      "name": "🔗 构建FFmpeg请求",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -992,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/api/v1/video/concat/sync",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"clip_files\": {{ JSON.stringify($json.clip_files) }}, \"audio_files\": {{ JSON.stringify($json.audio_files) }}, \"output_file\": \"{{ $json.output_file }}\", \"threads\": {{ $json.threads || 4 }} }",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 300000
+        }
+      },
+      "id": "04601416-d7fc-482a-bd50-d3c7497ac130",
+      "name": "🎬 调用FFmpeg拼接",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -768,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const concatResp = $input.item.json;\nconst summaryNode = $(\"🔗 构建FFmpeg请求\").first().json;\n\nif (concatResp.status === \"error\") {\n  throw new Error(\"FFmpeg 拼接失败: \" + (concatResp.message || \"未知错误\"));\n}\n\nreturn {\n  json: {\n    final_video_url: concatResp.output_file || summaryNode.output_file,\n    render_id: \"ffmpeg-local\",\n    total_duration: summaryNode.total_duration || 30,\n    variant_index: summaryNode.variant_index || 1,\n    hook_angle: summaryNode.hook_angle || \"\",\n    total_variants: summaryNode.total_variants || 1,\n    customer_email: summaryNode.customer_email || \"\",\n    customer_name: summaryNode.customer_name || \"\",\n    customer_id: summaryNode.customer_id || \"\",\n    product_name: summaryNode.product_name || \"\",\n    status: \"complete\"\n  }\n};"
+      },
+      "id": "ba43b243-3f82-4ff6-98db-95b66ad30262",
+      "name": "📦 提取成品URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -512,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "your-email@example.com",
+        "toEmail": "={{ $json.customer_email }}",
+        "subject": "={{ $json.product_name }} - 视频 #{{ $json.variant_index }}/{{ $json.total_variants }} 已生成 🎬",
+        "html": "=<div style=\"font-family: Arial, sans-serif; color: #333; line-height: 1.6;\">\n    <h2>Hello {{ $json.customer_name }},</h2>\n    \n    <p>Great news! The promotional video for your product <strong>{{ $json.product_name }}</strong> has been successfully generated.</p>\n    \n    <p style=\"background: #FFF3CD; padding: 10px; border-radius: 6px;\">🎬 <strong>Video #{{ $json.variant_index }} of {{ $json.total_variants }}</strong><br><em>Style: {{ $json.hook_angle }}</em></p>\n    \n    <div style=\"text-align:center; margin:32px 0;\">\n        <a href=\"{{ $json.final_video_url }}\" style=\"background:#6C5CE7; color:white; padding:14px 38px; text-decoration:none; border-radius:8px; font-size:16px; display:inline-block; font-weight:bold;\">Watch & Download Video</a>\n    </div>\n    \n    <p style=\"font-size: 14px; color: #555;\">Or copy and paste this link into your browser:<br>\n    <a href=\"{{ $json.final_video_url }}\" style=\"color:#6C5CE7; word-break: break-all;\">{{ $json.final_video_url }}</a></p>\n    \n    <hr style=\"border: 0; border-top: 1px solid #eee; margin: 30px 0;\">\n    \n    <p style=\"color:#999; font-size:12px; margin: 0;\">\n        <strong>Video Specs:</strong> {{ $json.total_duration }}s | 1080p HD <br>\n        <em>Generated automatically by AI Video Workflow - {{ $now.format('YYYY-MM-DD HH:mm') }}</em>\n    </p>\n</div>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7a6d6050-0fd3-4d12-9d48-680f4bc4479c",
+      "name": "📧 发送客户邮件",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        -272,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://example.com/webhook",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BACKEND_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"event\":\"video.generated\",\"timestamp\":\"{{ $now.toISO() }}\",\"data\":{\"customer_name\":\"{{ $json.customer_name }}\",\"product_name\":\"{{ $json.product_name }}\",\"video_url\":\"{{ $json.final_video_url }}\",\"duration\":{{ $json.total_duration }},\"resolution\":\"1080p\"}}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "ad2a5191-68dc-4614-a5e1-d32c9f5f5a53",
+      "name": "🌐 Webhook回调",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -272,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "formTitle": "🎬 AI 短视频生成器",
+        "formDescription": "上传产品图片 + 填入卖点 → Seedance AI 自动生成抖音爆款短视频",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "📸 产品图片",
+              "fieldType": "file",
+              "fieldName": "productImage",
+              "acceptFileTypes": ".jpg,.jpeg,.png,.webp",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "💡 产品卖点",
+              "fieldType": "textarea",
+              "fieldName": "sellingPoints",
+              "placeholder": "例：深层清洁、控油不拔干、添加水杨酸、适合油痘肌...",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "🎬 生成视频数量",
+              "fieldType": "number",
+              "fieldName": "numberOfVideos",
+              "placeholder": "要生成几个不同风格的视频？",
+              "defaultValue": "1",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "⏱ 每个视频时长",
+              "fieldType": "dropdown",
+              "fieldName": "videoDuration",
+              "defaultValue": "20",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "20"
+                  },
+                  {
+                    "option": "30"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "📧 客户邮箱",
+              "fieldType": "email",
+              "fieldName": "customerEmail",
+              "placeholder": "client@example.com",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "👤 客户名称",
+              "fieldName": "customerName",
+              "placeholder": "张三",
+              "requiredField": true
+            }
+          ]
+        },
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "a3f597d6-e301-4d98-8a3f-b3406d369f95",
+      "name": "产品信息",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        -2144,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return $input.item;"
+      },
+      "id": "8a31bd9a-38b7-4026-bc2a-c592ddc265cb",
+      "name": "💾 保存分镜上下文",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1232,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 因为切换到了 All Items 模式，这里改回 .first()\nconst product = $input.first().json;\nconst videoLang = product.videoLanguage || 'Portuguese (Brazil)';\nconst isPortuguese = videoLang.includes('Portuguese');\nconst count = parseInt(product.numberOfVideos) || 3;\n\n// 9 种爆款 hook 角度池\nconst anglePool = [\n  { pt: '翻车现场', en: 'Epic Fail Moment', style: 'panic, authentic, relatable', emotion_pt: 'desespero e frustração', emotion_en: 'desperation and frustration' },\n  { pt: '素人见证', en: 'Real Person Testimonial', style: 'testimonial, tearful, grateful', emotion_pt: 'alívio e gratidão', emotion_en: 'relief and gratitude' },\n  { pt: '极限测评', en: 'Extreme Challenge Test', style: 'extreme test, scientific, shocking', emotion_pt: 'choque e surpresa', emotion_en: 'shock and surprise' },\n  { pt: '反差对比', en: 'Before vs After Split', style: 'split screen, dramatic contrast', emotion_pt: 'incredulidade e desejo', emotion_en: 'disbelief and desire' },\n  { pt: '明星体验', en: 'Luxury Experience', style: 'glamorous, aspirational, premium', emotion_pt: 'admiração e vontade', emotion_en: 'admiration and craving' },\n  { pt: '专家解析', en: 'Expert Breakdown', style: 'educational, authoritative', emotion_pt: 'confiança e respeito', emotion_en: 'confidence and trust' },\n  { pt: '情景喜剧', en: 'Relatable Skit', style: 'funny, everyday humor', emotion_pt: 'identificação e riso', emotion_en: 'relatability and laughter' },\n  { pt: '悬念揭秘', en: 'Mystery Reveal', style: 'suspense, curiosity, reveal', emotion_pt: 'curiosidade intensa', emotion_en: 'intense curiosity' },\n  { pt: '快节奏混剪', en: 'Fast Montage', style: 'high energy, rapid cuts, dynamic', emotion_pt: 'empolgação total', emotion_en: 'total excitement' }\n];\n\nconst selected = [];\nfor (let i = 0; i < count; i++) {\n  const angle = anglePool[i % anglePool.length];\n  selected.push({\n    ...product,\n    variant_index: i + 1,\n    hook_angle: isPortuguese ? angle.pt : angle.en,\n    hook_style: angle.style,\n    hook_emotion: isPortuguese ? angle.emotion_pt : angle.emotion_en,\n    total_variants: count\n  });\n}\n\n// 裂变输出：吐出包含 3 个变体的数组\nreturn selected.map(item => ({ json: item }));\n"
+      },
+      "id": "376e8af1-5b85-47dd-8b10-10d23881059d",
+      "name": "🎲 提示词变体生成器",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1792,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "dad49662-0ab7-48be-a315-e5e9b00cdf1c",
+      "name": "🔄 逐提示词",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -1616,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\n\nif (item.binary && item.binary.productImage) {\n  // 强制从 n8n 的硬盘/内存中提取真实的二进制 Buffer\n  const buffer = await this.helpers.getBinaryDataBuffer(0, 'productImage');\n  // 将真实的二进制文件转换为 base64 字符串\n  const base64Data = buffer.toString('base64');\n  const mimeType = item.binary.productImage.mimeType;\n  \n  // 拼接完整的 Data URL 并塞回 json\n  item.json.product_image_base64 = `data:${mimeType};base64,${base64Data}`;\n}\n\nreturn item;"
+      },
+      "id": "4a7071b6-1332-4c72-8158-a2a8e8f8ae0f",
+      "name": "提取产品图片",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1952,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.deepseek.com/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  {\n    \"model\": \"deepseek-v4-pro\",\n    \"response_format\": { \"type\": \"json_object\" },\n    \"messages\": [\n      {\n        \"role\": \"user\",\n        \"content\": \"角色设定：你是一个拥有百万粉丝的 TikTok/Reels 爆款短视频编导，精通极速抓取观众注意力的脚本结构和爆款逻辑。\\n\\n任务：根据提供的【视频时长】和【产品信息】，自主推理最容易爆火的视频主题、痛点及受众，并生成剧本草案。\\n\\n输入信息：\\n\\n视频时长：\" + $('产品信息').item.json.videoDuration + \"（仅限 20 秒或 30 秒）\\n\\n产品信息：\" + $('产品信息').item.json.sellingPoints + \"\\n\\n输出要求（请严格按以下 JSON 格式输出）：\\n{\\n  \\\"设定简述\\\": {\\n    \\\"推导视频主题\\\": \\\"\\\",\\n    \\\"挖掘核心痛点或反常识点\\\": \\\"\\\",\\n    \\\"锁定目标受众\\\": \\\"\\\"\\n  },\\n  \\\"剧本大纲\\\": {\\n    \\\"第一阶段_强力钩子\\\": \\\"用视觉冲击或极具悬念的话术瞬间抓住注意力\\\",\\n    \\\"第二阶段_视觉演示\\\": \\\"通过动作展示问题所在，制造强烈共鸣\\\",\\n    \\\"第三阶段_客观解释\\\": \\\"解释背后的原理，输出干货并自然引出产品\\\",\\n    \\\"第四阶段_实用结论\\\": \\\"展示产品带来的改变，给出一个行动指令\\\"\\n  }\\n}\"\n      }\n    ]\n  }\n}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1344,
+        720
+      ],
+      "id": "0bbdc744-e931-4698-bf16-f3c518fd3893",
+      "name": "节点 A：创意与剧情生成 (The Storyboarder)"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.deepseek.com/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  {\n    \"model\": \"deepseek-v4-pro\",\n    \"response_format\": { \"type\": \"json_object\" },\n    \"messages\": [\n      {\n        \"role\": \"user\",\n        \"content\": \"任务：你是一个 AI 视频美术总监。请阅读以下剧本草案，并为该视频设计一个统一的主角外观设定和场景设定。同时，你需要根据你设定的主角性别，分配对应的配音员ID。\\n\\n【⚠️ 核心风格强制要求】：\\n必须设定为'真人口播/Vlogger 自拍风格'。描述中必须明确包含：'面向镜头直接说话'、'表情生动夸张'、'Vlog 自拍视角'、'中景近景镜头' 等字眼，确保生成的是真人对着镜头说话的画面。\\n\\n输入剧本：\\n\" + $json.choices[0].message.content + \"\\n\\n【⚠️ 配音员强制分配规则】：\\n- 如果你设定的主角是女性，必须且只能输出 voice_id: \\\"YOUR_FEMALE_VOICE_ID\\\"\\n- 如果你设定的主角是男性，必须且只能输出 voice_id: \\\"YOUR_MALE_VOICE_ID\\\"\\n\\n输出要求（请严格按 JSON 格式输出）：\\n请输出一段极其详尽的【中文】视觉描述，用于输入给 AI 视频生成大模型。必须包含：人物的性别、年龄、国籍/人种、发型、具体服装，以及场景环境的光影风格。这段描述将被直接应用于每一个分镜中以保持角色一致性。同时输出你选择的 voice_id。\\n\\n格式示例：\\n{\\n  \\\"prompt\\\": \\\"一位 25 岁的巴西年轻女性，微卷棕发，穿着宽松白色家居服，站在光线柔和自然的现代化浴室里，面对镜头直接说话，表情生动夸张，Vlog 自拍视角，中景近景镜头...\\\",\\n  \\\"voice_id\\\": \\\"YOUR_FEMALE_VOICE_ID\\\"\\n}\"\n      }\n    ]\n  }\n}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1104,
+        720
+      ],
+      "id": "d57515ba-f226-4b97-9c24-e42bc888b235",
+      "name": "节点 B：角色与视听统筹 (The Art Director)"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.deepseek.com/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  {\n    \"model\": \"deepseek-v4-pro\",\n    \"response_format\": { \"type\": \"json_object\" },\n    \"messages\": [\n      {\n        \"role\": \"user\",\n        \"content\": \"任务：你是一个专业的巴西葡萄牙语本地化专家。请根据提供的剧本草案，将其中的台词提炼出来，并完全重写为极具网感的日常巴西葡萄牙语 (pt-BR)。\\n\\n输入信息：\\n\\n总时长：\" + $('产品信息').item.json.videoDuration + \"\\n\\n剧本草案：\" + $('节点 A：创意与剧情生成 (The Storyboarder)').item.json.choices[0].message.content + \"\\n\\n执行红线（不可违背，否则系统崩溃）：\\n\\n1. 语言必须是接近圣保罗地区的自然口语（带上 \\\"cara\\\", \\\"meu\\\", \\\"valeu\\\" 等本地语气词）。\\n2. 🚫【西班牙语黑名单】：以下西班牙语词汇绝对禁止出现，违者系统崩溃：\\n   - 严禁 \\\"gracias\\\" → 必须用 \\\"obrigado\\\" / \\\"obrigada\\\"\\n   - 严禁 \\\"por favor\\\" (西语发音) → 必须用葡语习惯 \\\"por gentileza\\\" 或纯正葡语 \\\"por favor\\\"\\n   - 严禁 \\\"adiós\\\" → 必须用 \\\"tchau\\\"\\n   - 严禁 \\\"vale\\\" → 必须用 \\\"tudo bem\\\" / \\\"beleza\\\"\\n   - 任何其他西班牙语借词一律禁止。\\n\\n3. ⏱️【字数绝对控制】：控制在 20-25 个单词/10秒，提升语速自然度：\\n- 如果输入是 30 秒：分为 3 段，每段严格对应 10 秒，每段必须包含 20 到 25 个葡萄牙语单词。\\n- 如果输入是 20 秒：分为 2 段，每段严格对应 10 秒，每段必须包含 20 到 25 个葡萄牙语单词。\\n\\n输出格式要求（请严格按以下 JSON 格式输出）：\\n{\\n  \\\"part_1\\\": \\\"此处输出 0-10 秒的纯葡语台词\\\",\\n  \\\"part_2\\\": \\\"此处输出 10-20 秒的纯葡语台词\\\",\\n  \\\"part_3\\\": \\\"如果是30秒，此处输出 20-30 秒的纯葡语台词。如果是20秒，此项留空\\\"\\n}\"\n      }\n    ]\n  }\n}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -864,
+        720
+      ],
+      "id": "56d0c306-bd0b-4c6f-9b7c-1f986707c1f3",
+      "name": "节点 C：台词精修与字数绝对控制 (The Script Supervisor)"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.deepseek.com/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  {\n    \"model\": \"deepseek-v4-pro\",\n    \"response_format\": { \"type\": \"json_object\" },\n    \"messages\": [\n      {\n        \"role\": \"user\",\n        \"content\": \"任务：你是一个自动化工作流 Data Synthesizer。你需要将分散的中文设定与葡语台词合并为结构化的视频分段提示词。\\n\\n输入信息：\\n\\n视频时长：\" + $('产品信息').item.json.videoDuration + \"\\n\\n剧本动作提取：\" + $('节点 A：创意与剧情生成 (The Storyboarder)').item.json.choices[0].message.content + \"\\n\\n全局角色中文设定：\" + $('节点 B：角色与视听统筹 (The Art Director)').item.json.choices[0].message.content + \"\\n\\n精准巴西葡语台词：\" + $json.choices[0].message.content + \"\\n\\n产品视觉基因：\" + $('gemma').first().json.visual_anchor + \"\\n\\n【⚠️ 提示词组装模板】：\\n每一段 prompt 必须严格按照以下模板进行中文拼接，结尾硬性注入 UGC 后缀和去字幕指令：\\n\\n[全局角色中文设定] + [分镜动作/表情描述] + \\\"\\n\\n产品视觉特征：\\\" + [产品视觉基因] + \\\"，UGC Vlog 风格，真实 TikTok 爆款审美，iPhone 14 前置镜头拍摄，原生未剪辑画面，手持镜头轻微晃动，自然不完美的皮肤纹理，日常室内自然光线，无 3D 渲染，无平滑 CGI，自然真实的说话嘴型动作。 CRITICAL: Do NOT generate, render, or display any text, subtitles, captions, letters, words, watermarks, or written characters anywhere in the video. Clean video without any text overlay.\\\"\\n\\n组装规则：\\n1. segment_index：段序号，从1开始。\\n2. duration_seconds：统一每段 10 秒。\\n3. segment_type：段类型（hook/body/climax/cta）。\\n4. prompt：按上述模板组装的纯中文视觉提示词。\\n5. narration：严格填入对应的【精准巴西葡语台词】。\\n6. text_overlay：必须严格留空字符串 \\\"\\\"。\\n\\n输出格式（请严格按以下 JSON 格式输出）：\\n{\\n  \\\"segments\\\": [\\n    {\\n      \\\"segment_index\\\": 1,\\n      \\\"duration_seconds\\\": 10,\\n      \\\"segment_type\\\": \\\"hook\\\",\\n      \\\"prompt\\\": \\\"(按模板拼接好的完整中文提示词)\\\",\\n      \\\"narration\\\": \\\"(填入0-10秒的葡语台词)\\\",\\n      \\\"text_overlay\\\": \\\"\\\"\\n    },\\n    {\\n      \\\"segment_index\\\": 2,\\n      \\\"duration_seconds\\\": 10,\\n      \\\"segment_type\\\": \\\"cta\\\",\\n      \\\"prompt\\\": \\\"(按模板拼接好的完整中文提示词)\\\",\\n      \\\"narration\\\": \\\"(填入该段对应的葡语台词)\\\",\\n      \\\"text_overlay\\\": \\\"\\\"\\n    }\\n  ]\\n}\"\n      }\n    ]\n  }\n}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -640,
+        720
+      ],
+      "id": "b7be2f32-2e94-4a28-8112-bf70bf2727f7",
+      "name": "节点 D：最终格式组装 (The Synthesizer)"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_OPENROUTER_API_KEY"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  {\n    \"model\": \"google/gemma-4-26b-a4b-it:free\",\n    \"messages\": [\n      {\n        \"role\": \"user\",\n        \"content\": \"你是一个顶级的国际短视频营销专家(精通 TikTok、Instagram Reels 爆款逻辑,深谙海外尤其是巴西及英语区用户的消费心理)。\\n请分析以下产品图片和产品卖点,深挖产品的戏剧性潜力,并严格按照格式输出。\\n\\n【⚠️ 核心格式铁律：防止 JSON 解析崩溃】\\n1. 绝对不要输出任何 Markdown 标记（如 ```json），只输出纯净的大括号 {} 包裹的 JSON 字符串！\\n2. 所有的 JSON Value（值）内部，绝对不允许再次出现双引号（\\\"）！如果你需要在文本中强调某个词汇或引用品牌名，请务必使用单引号（'）代替！\\n   - ❌ 错误示范：\\\"visual_features\\\": [\\\"醒目的'Moisturizing Cream'字样\\\"]\\n   - ✅ 正确示范：\\\"visual_features\\\": [\\\"醒目的'Moisturizing Cream'字样\\\"]\\n\\n请根据以下结构输出 JSON：\\n{\\n\\\"product_name\\\":\\\"产品名(中英文对照)\\\",\\n\\\"category\\\":\\\"产品类目\\\",\\n\\\"visual_anchor\\\":\\\"一段极其详尽的纯英文视觉描述，用于 T2V 视频生成。精确描述产品的物理材质、包装形状、主色调、瓶盖/外壳细节等（例如：A transparent glass jar filled with vibrant green square gummies, white modern label, mint green lid）\\\",\\n\\\"visual_features\\\":[\\\"5-8个最抢眼的视觉特征,需适合转化为视频画面\\\"],\\n\\\"target_audience\\\":\\\"核心目标人群(细化年龄/性别/典型的生活痛点)\\\",\\n\\\"extreme_pain_point\\\":\\\"如果没有这个产品,用户会面临的最糟糕、最令人抓狂的场景是什么?(用夸张的情绪化语言表达)\\\",\\n\\\"core_solution\\\":\\\"该产品如何以最意想不到或最爽的方式解决上述痛点?\\\",\\n\\\"visual_hook_suggestion\\\":\\\"适合放在视频前3秒的视觉冲击画面建议(例如:打破常规的动作、极具反差的对比、猎奇的展示方式)\\\",\\n\\\"key_differentiators\\\":[\\\"3-5个最容易在短视频中展现的差异化卖点\\\"],\\n\\\"suggested_style\\\":\\\"推荐的视频视听风格:例如 夸张搞笑/极度解压/悬疑反转/视觉震撼\\\"\\n}\\n\\n产品卖点:\\n\" + $('产品信息').first().json.sellingPoints + \"\\n\\n分析产品数据并输出结构化JSON:\"\n      }\n    ],\n    \"reasoning\": {\n      \"enabled\": true\n    }\n  }\n}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2128,
+        704
+      ],
+      "id": "a8d79df3-233e-4f2a-9ceb-1b23c0227037",
+      "name": "gemma"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 1. R2 公网访问域名\nconst publicDomain = 'https://YOUR_PUBLIC_R2_DOMAIN.r2.dev';\n\n// 2. 从表单中获取唯一的表单提交时间标识（与 S3 节点的命名规则保持 100% 一致）\nconst formInput = $('产品信息').first().json;\nconst timeKey = formInput.submittedAt || 'temp';\n\n// 3. 拼接出精准对应的文件名，绝对不会出现时间戳漂移\nconst fileKey = `products/product_${timeKey}.png`;\n\n// 4. 组成完整的直链 URL\nconst imageUrl = `${publicDomain}/${fileKey}`;\n\nreturn {\n  json: {\n    ...formInput,\n    product_public_image_url: imageUrl\n  }\n};"
+      },
+      "id": "228d0013-abdb-48f0-b491-7d136ac723d4",
+      "name": "📎 提取产品图URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1952,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "n8n-assets",
+        "fileName": "=products/product_{{ $('产品信息').first().json.submittedAt || 'temp' }}.png",
+        "binaryPropertyName": "=productImage",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.s3",
+      "typeVersion": 1,
+      "position": [
+        -2128,
+        480
+      ],
+      "id": "e8af9ab9-5d91-47e8-bf75-0793b7ffde46",
+      "name": "☁️ 上传产品图到R2"
+    }
+  ],
+  "connections": {
+    "📊 解析产品分析": {
+      "main": [
+        [
+          {
+            "node": "🎲 提示词变体生成器",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📝 解析分段": {
+      "main": [
+        [
+          {
+            "node": "🔄 逐段生成",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📦 汇总结果": {
+      "main": [
+        [
+          {
+            "node": "🔗 构建FFmpeg请求",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🎥 Seedance 视频生成": {
+      "main": [
+        [
+          {
+            "node": "📹 提取TaskID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔄 逐段生成": {
+      "main": [
+        [
+          {
+            "node": "📦 汇总结果",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "💾 保存分镜上下文",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📹 提取TaskID": {
+      "main": [
+        [
+          {
+            "node": "⏳ 等待轮询",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "⏳ 等待轮询": {
+      "main": [
+        [
+          {
+            "node": "🔍 查询任务状态",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔍 查询任务状态": {
+      "main": [
+        [
+          {
+            "node": "🔗 合并状态",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔗 合并状态": {
+      "main": [
+        [
+          {
+            "node": "✅ 任务完成?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "✅ 任务完成?": {
+      "main": [
+        [
+          {
+            "node": "📹 提取视频URL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "⏱️ 超时检查",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "⏱️ 超时检查": {
+      "main": [
+        [
+          {
+            "node": "⏳ 等待轮询",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📹 提取视频URL": {
+      "main": [
+        [
+          {
+            "node": "🔄 逐段生成",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔗 构建FFmpeg请求": {
+      "main": [
+        [
+          {
+            "node": "🎬 调用FFmpeg拼接",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🎬 调用FFmpeg拼接": {
+      "main": [
+        [
+          {
+            "node": "📦 提取成品URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📦 提取成品URL": {
+      "main": [
+        [
+          {
+            "node": "📧 发送客户邮件",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🌐 Webhook回调",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🔄 逐提示词",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "产品信息": {
+      "main": [
+        [
+          {
+            "node": "提取产品图片",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "💾 保存分镜上下文": {
+      "main": [
+        [
+          {
+            "node": "🎥 Seedance 视频生成",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🎲 提示词变体生成器": {
+      "main": [
+        [
+          {
+            "node": "🔄 逐提示词",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔄 逐提示词": {
+      "main": [
+        [],
+        [
+          {
+            "node": "节点 A：创意与剧情生成 (The Storyboarder)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "提取产品图片": {
+      "main": [
+        [
+          {
+            "node": "☁️ 上传产品图到R2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 A：创意与剧情生成 (The Storyboarder)": {
+      "main": [
+        [
+          {
+            "node": "节点 B：角色与视听统筹 (The Art Director)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 B：角色与视听统筹 (The Art Director)": {
+      "main": [
+        [
+          {
+            "node": "节点 C：台词精修与字数绝对控制 (The Script Supervisor)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 C：台词精修与字数绝对控制 (The Script Supervisor)": {
+      "main": [
+        [
+          {
+            "node": "节点 D：最终格式组装 (The Synthesizer)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 D：最终格式组装 (The Synthesizer)": {
+      "main": [
+        [
+          {
+            "node": "📝 解析分段",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "gemma": {
+      "main": [
+        [
+          {
+            "node": "📊 解析产品分析",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📎 提取产品图URL": {
+      "main": [
+        [
+          {
+            "node": "gemma",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "☁️ 上传产品图到R2": {
+      "main": [
+        [
+          {
+            "node": "📎 提取产品图URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {}
+}
